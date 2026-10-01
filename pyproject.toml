@@ -1,7 +1,7 @@
 [project]
 name = "credit-card-fraud-detection"
 version = "0.1.0"
-description = "Add your description here"
+description = "Credit card fraud detection: model comparison + Streamlit dashboard"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,4 +16,5 @@ dependencies = [
     "seaborn>=0.13.2",
     "streamlit>=1.62.0",
     "torch>=2.13.0",
+    "xgboost>=2.1.0",
 ]
