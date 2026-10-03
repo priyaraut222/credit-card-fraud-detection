@@ -1,0 +1,11 @@
+{
+  "input_dim": 30,
+  "best_model_by_pr_auc": "Random Forest (SMOTE)",
+  "deployment_model": "XGBoost (weighted, tuned)",
+  "deployment_model_file": "xgb_weighted.pkl",
+  "chosen_threshold": 0.0041297790594398975,
+  "random_state": 42,
+  "split_strategy": "time-based (last 20% of transactions by Time held out)",
+  "cost_fn_assumed": 500,
+  "cost_fp_assumed": 5
+}

@@ -1,0 +1,6 @@
+{
+  "total_transactions": 284807,
+  "legit_transactions": 284315,
+  "fraud_transactions": 492,
+  "fraud_rate_pct": 0.1727485630620034
+}

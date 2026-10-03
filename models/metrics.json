@@ -1,0 +1,240 @@
+{
+  "Logistic Regression (baseline)": {
+    "precision": 0.8913043478260869,
+    "recall": 0.5466666666666666,
+    "f1": 0.6776859504132231,
+    "pr_auc": 0.7438917605845347,
+    "roc_auc": 0.9788478914338953,
+    "confusion_matrix": [
+      [
+        56882,
+        5
+      ],
+      [
+        34,
+        41
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.6430545998975856,
+    "pr_auc_ci_high": 0.8309168165942153
+  },
+  "Logistic Regression (weighted)": {
+    "precision": 0.07074973600844774,
+    "recall": 0.8933333333333333,
+    "f1": 0.13111545988258316,
+    "pr_auc": 0.7610555147933941,
+    "roc_auc": 0.986294232425686,
+    "confusion_matrix": [
+      [
+        56007,
+        880
+      ],
+      [
+        8,
+        67
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.647188374430517,
+    "pr_auc_ci_high": 0.8593306192802371
+  },
+  "Logistic Regression (SMOTE)": {
+    "precision": 0.0681586978636826,
+    "recall": 0.8933333333333333,
+    "f1": 0.1266540642722117,
+    "pr_auc": 0.7675816429207738,
+    "roc_auc": 0.9852126730770359,
+    "confusion_matrix": [
+      [
+        55971,
+        916
+      ],
+      [
+        8,
+        67
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.6558654568783387,
+    "pr_auc_ci_high": 0.8597382911795364
+  },
+  "Random Forest (baseline)": {
+    "precision": 0.9814814814814815,
+    "recall": 0.7066666666666667,
+    "f1": 0.8217054263565892,
+    "pr_auc": 0.7867967811169272,
+    "roc_auc": 0.9505862499340799,
+    "confusion_matrix": [
+      [
+        56886,
+        1
+      ],
+      [
+        22,
+        53
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.684553261052323,
+    "pr_auc_ci_high": 0.8637037232347597
+  },
+  "Random Forest (weighted)": {
+    "precision": 0.9811320754716981,
+    "recall": 0.6933333333333334,
+    "f1": 0.8125,
+    "pr_auc": 0.8114465763000502,
+    "roc_auc": 0.9437600857840982,
+    "confusion_matrix": [
+      [
+        56886,
+        1
+      ],
+      [
+        23,
+        52
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.7201513989644968,
+    "pr_auc_ci_high": 0.8882560868501946
+  },
+  "Random Forest (SMOTE)": {
+    "precision": 0.9821428571428571,
+    "recall": 0.7333333333333333,
+    "f1": 0.8396946564885496,
+    "pr_auc": 0.8116145321076481,
+    "roc_auc": 0.9789292222593329,
+    "confusion_matrix": [
+      [
+        56886,
+        1
+      ],
+      [
+        20,
+        55
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.7164111394020132,
+    "pr_auc_ci_high": 0.8864054481738106
+  },
+  "XGBoost (baseline)": {
+    "precision": 0.7878787878787878,
+    "recall": 0.6933333333333334,
+    "f1": 0.7375886524822695,
+    "pr_auc": 0.5992461187273896,
+    "roc_auc": 0.9013968041907641,
+    "confusion_matrix": [
+      [
+        56873,
+        14
+      ],
+      [
+        23,
+        52
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.4753137453756719,
+    "pr_auc_ci_high": 0.7239510668090117
+  },
+  "XGBoost (weighted, tuned)": {
+    "precision": 0.8382352941176471,
+    "recall": 0.76,
+    "f1": 0.7972027972027972,
+    "pr_auc": 0.8047069026307098,
+    "roc_auc": 0.9823078500653343,
+    "confusion_matrix": [
+      [
+        56876,
+        11
+      ],
+      [
+        18,
+        57
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.7040101845730468,
+    "pr_auc_ci_high": 0.8746215368716449
+  },
+  "Isolation Forest": {
+    "precision": 0.026447788417692658,
+    "recall": 0.7733333333333333,
+    "f1": 0.05114638447971781,
+    "pr_auc": 0.03671874908576725,
+    "roc_auc": 0.9427473177820357,
+    "confusion_matrix": [
+      [
+        54752,
+        2135
+      ],
+      [
+        17,
+        58
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.024986253511095874,
+    "pr_auc_ci_high": 0.0544301412686296
+  },
+  "Autoencoder": {
+    "precision": 0.007121525384792098,
+    "recall": 0.8266666666666667,
+    "f1": 0.014121398473977908,
+    "pr_auc": 0.21881564147397162,
+    "roc_auc": 0.9085991527062421,
+    "confusion_matrix": [
+      [
+        48243,
+        8644
+      ],
+      [
+        13,
+        62
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.14412006542550415,
+    "pr_auc_ci_high": 0.31953473526241144
+  },
+  "Ensemble (Isolation Forest + Autoencoder)": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "pr_auc": 0.05247334050192394,
+    "roc_auc": 0.9444297173929602,
+    "confusion_matrix": [
+      [
+        56875,
+        12
+      ],
+      [
+        75,
+        0
+      ]
+    ],
+    "threshold_used": 0.5,
+    "pr_auc_ci_low": 0.03318304156410115,
+    "pr_auc_ci_high": 0.08134407811893217
+  },
+  "XGBoost (weighted, tuned threshold)": {
+    "precision": 0.13859275053304904,
+    "recall": 0.8666666666666667,
+    "f1": 0.23897058823529413,
+    "pr_auc": 0.8047069026307098,
+    "roc_auc": 0.9823078500653343,
+    "confusion_matrix": [
+      [
+        56483,
+        404
+      ],
+      [
+        10,
+        65
+      ]
+    ],
+    "threshold_used": 0.0041297790594398975
+  }
+}
