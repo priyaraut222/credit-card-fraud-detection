@@ -2,7 +2,9 @@
 
 End-to-end fraud detection system on the Kaggle "Credit Card Fraud Detection" dataset (284,807 transactions, 0.173% fraud rate): nine supervised and unsupervised modeling approaches, hyperparameter-tuned, SHAP-explained, time-validated, and served through an interactive Streamlit dashboard.
 
-**[Live Demo](#) &nbsp;•&nbsp; [Findings Write-Up](FINDINGS.md) &nbsp;•&nbsp; [Results](#results)**
+**[Live Demo](https://credit-card-fraud-detection-ppr222.streamlit.app/) &nbsp;•&nbsp; [Findings Write-Up](FINDINGS.md) &nbsp;•&nbsp; [Results](#results)**
+
+> Hosted on Streamlit Community Cloud's free tier. If the app shows "Connecting to Streamlit server..." for a moment on first load, that's expected — free-tier apps sleep after a period of inactivity and take a few seconds to wake up. It stays fast for the rest of your session.
 
 ---
 
@@ -101,7 +103,8 @@ credit-card-fraud-detection/
 ├── train_models.py        # Trains all 9 models, tunes, explains, saves everything
 ├── app.py                 # Streamlit dashboard — loads artifacts, never retrains
 ├── src/
-│   └── model_utils.py     # Shared Pipeline builder, Autoencoder, cost/CI helpers
+│   ├── model_utils.py      # Shared Pipeline builder, cost/CI helpers (no torch — kept lightweight)
+│   └── autoencoder_utils.py # PyTorch Autoencoder, isolated so torch loads only when needed
 ├── tests/
 │   └── test_model_utils.py   # pytest coverage for preprocessing + evaluation logic
 ├── notebooks/
@@ -126,7 +129,7 @@ starts in seconds.
 **Prerequisites:** Python 3.12+, [uv](https://docs.astral.sh/uv/)
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/priyaraut222/credit-card-fraud-detection.git
 cd credit-card-fraud-detection
 
 # Download creditcard.csv from the Kaggle "Credit Card Fraud Detection"
