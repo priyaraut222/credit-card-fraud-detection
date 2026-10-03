@@ -5,4 +5,6 @@ data/*.csv
 models/
 .ipynb_checkpoints/
 *.egg-info/
-creditcard.csv
+.pytest_cache/
+.coverage
+htmlcov/

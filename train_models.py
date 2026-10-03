@@ -1,18 +1,17 @@
 """
 train_models.py
 ================
-This is the ONE script that actually trains models. It mirrors the exact
-steps from fraud_detection.ipynb, but adds the piece the notebook was
-missing: it SAVES every trained model, scaler, and metric to models/,
-so app.py can load them instantly instead of retraining on every run.
+Trains every model, tunes the deployment model's hyperparameters, computes
+SHAP explanations, bootstrap confidence intervals, and an ensemble anomaly
+score -- then saves everything app.py needs into models/.
 
-Run this once (or again whenever you retrain):
+Run once (or again whenever you retrain):
 
     python train_models.py
 
-Expects data/creditcard.csv to exist (the standard Kaggle 284,807-row /
-492-fraud "Credit Card Fraud Detection" dataset). Takes a few minutes --
-SMOTE + Random Forest is the slowest step.
+Expects data/creditcard.csv (the standard Kaggle 284,807-row / 492-fraud
+"Credit Card Fraud Detection" dataset). Takes roughly 15-25 minutes --
+the hyperparameter search and SMOTE+RF are the slowest steps.
 """
 import json
 import os
@@ -21,6 +20,7 @@ import time
 import joblib
 import numpy as np
 import pandas as pd
+import shap
 import torch
 import torch.nn as nn
 from imblearn.over_sampling import SMOTE
@@ -30,17 +30,26 @@ from sklearn.metrics import (
     average_precision_score,
     confusion_matrix,
     f1_score,
-    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline as SkPipeline
 from torch.utils.data import DataLoader, TensorDataset
 from xgboost import XGBClassifier
 
-from src.model_utils import Autoencoder, MODEL_FEATURE_ORDER, MODELS_DIR, PCA_COLUMNS
+from src.model_utils import (
+    Autoencoder,
+    MODELS_DIR,
+    PCA_COLUMNS,
+    RAW_FEATURE_ORDER,
+    bootstrap_pr_auc_ci,
+    build_model_pipeline,
+    build_preprocessing_pipeline,
+    cost_optimal_threshold,
+    minmax,
+)
 
 RANDOM_STATE = 42
 DATA_PATH = os.path.join("data", "creditcard.csv")
@@ -57,16 +66,13 @@ def log(msg):
 if not os.path.exists(DATA_PATH):
     raise FileNotFoundError(
         f"'{DATA_PATH}' not found. Download creditcard.csv from the Kaggle "
-        "'Credit Card Fraud Detection' dataset and place it in the data/ folder."
+        "'Credit Card Fraud Detection' dataset and place it in data/."
     )
 log("Loading creditcard.csv ...")
 df_raw = pd.read_csv(DATA_PATH)
 log(f"Loaded {len(df_raw):,} rows, {int(df_raw['Class'].sum()):,} fraud "
     f"({df_raw['Class'].mean()*100:.4f}%)")
 
-# ---------------------------------------------------------------------------
-# 2. Dataset stats + EDA artifacts the dashboard needs (Overview / Insights pages)
-# ---------------------------------------------------------------------------
 dataset_stats = {
     "total_transactions": int(len(df_raw)),
     "legit_transactions": int((df_raw["Class"] == 0).sum()),
@@ -76,173 +82,228 @@ dataset_stats = {
 
 correlations = (
     df_raw[PCA_COLUMNS + ["Amount", "Time", "Class"]]
-    .corr()["Class"]
-    .drop("Class")
+    .corr()["Class"].drop("Class")
     .sort_values(key=lambda s: s.abs(), ascending=False)
     .to_dict()
 )
 
-# Small sample kept for charts in the dashboard (keeps the app light --
-# it never needs to load the full 284,807-row CSV)
 normal_rows = df_raw[df_raw["Class"] == 0]
-sample_size = min(8000, len(normal_rows))  # don't crash on smaller datasets
+sample_size = min(8000, len(normal_rows))
 sample_df = pd.concat(
-    [
-        df_raw[df_raw["Class"] == 1],  # keep every fraud row, there are few
-        normal_rows.sample(n=sample_size, random_state=RANDOM_STATE),
-    ]
+    [df_raw[df_raw["Class"] == 1], normal_rows.sample(n=sample_size, random_state=RANDOM_STATE)]
 ).sample(frac=1, random_state=RANDOM_STATE)
 sample_df.to_csv(os.path.join(MODELS_DIR, "sample_data.csv"), index=False)
 
 # ---------------------------------------------------------------------------
-# 3. Preprocess -- mirrors the notebook exactly:
-#    scale Amount and Time with THEIR OWN StandardScaler each, then drop
-#    the raw columns. Two separate scalers are saved so inference on new
-#    transactions uses identical transforms to what the models were trained on.
+# 2. TIME-BASED split (not random stratified)
+#
+# `Time` is seconds elapsed since the first transaction -- a real temporal
+# signal. A random split lets the model train on transactions that happen
+# chronologically AFTER some of its test transactions, which never happens
+# in production (you can't train on the future). Sorting by Time and taking
+# the last 20% as the test set is a more honest estimate of how this model
+# would perform deployed forward in time.
 # ---------------------------------------------------------------------------
-log("Scaling Amount and Time (separate scalers, matching the notebook) ...")
-df = df_raw.copy()
+log("Splitting by Time (chronological), not randomly ...")
+df_sorted = df_raw.sort_values("Time").reset_index(drop=True)
+split_idx = int(len(df_sorted) * 0.8)
 
-amount_scaler = StandardScaler()
-df["Amount_scaled"] = amount_scaler.fit_transform(df[["Amount"]])
+X = df_sorted[RAW_FEATURE_ORDER]
+y = df_sorted["Class"]
 
-time_scaler = StandardScaler()
-df["Time_scaled"] = time_scaler.fit_transform(df[["Time"]])
+X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+log(f"Train: {len(X_train):,} rows ({y_train.mean()*100:.4f}% fraud, "
+    f"Time <= {df_sorted['Time'].iloc[split_idx-1]:.0f}s)")
+log(f"Test:  {len(X_test):,} rows ({y_test.mean()*100:.4f}% fraud, "
+    f"Time > {df_sorted['Time'].iloc[split_idx-1]:.0f}s)")
 
-df = df.drop(["Time", "Amount"], axis=1)
+test_export = X_test.copy()
+test_export["Class"] = y_test.values
+test_export.to_csv(os.path.join(MODELS_DIR, "test_holdout_sample.csv"), index=False)
 
-joblib.dump(amount_scaler, os.path.join(MODELS_DIR, "amount_scaler.pkl"))
-joblib.dump(time_scaler, os.path.join(MODELS_DIR, "time_scaler.pkl"))
-
-X = df[MODEL_FEATURE_ORDER]
-y = df["Class"]
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
-)
-log(f"Train: {len(X_train):,} rows ({y_train.mean()*100:.4f}% fraud) | "
-    f"Test: {len(X_test):,} rows ({y_test.mean()*100:.4f}% fraud)")
-
-metrics = {}      # model_name -> dict of scores (what the dashboard reads)
+metrics = {}
 
 
-def evaluate(name, y_true, y_proba, threshold=0.5):
+def evaluate(name, y_true, y_proba, threshold=0.5, compute_ci=True):
     y_pred = (y_proba >= threshold).astype(int)
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist()
-    metrics[name] = {
+    entry = {
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "pr_auc": float(average_precision_score(y_true, y_proba)),
         "roc_auc": float(roc_auc_score(y_true, y_proba)),
-        "confusion_matrix": cm,  # [[tn, fp], [fn, tp]]
+        "confusion_matrix": cm,
         "threshold_used": float(threshold),
     }
-    log(f"{name:40s} PR-AUC={metrics[name]['pr_auc']:.4f}  "
-        f"Recall={metrics[name]['recall']:.3f}  Precision={metrics[name]['precision']:.3f}")
-
-
-def cost_optimal_threshold(y_true, y_proba, cost_fn=500, cost_fp=5):
-    _, _, thresholds = precision_recall_curve(y_true, y_proba)
-    candidates = np.unique(np.concatenate([thresholds, [0.5]]))
-    best_t, best_cost = 0.5, float("inf")
-    for t in candidates:
-        y_pred = (y_proba >= t).astype(int)
-        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-        cost = fn * cost_fn + fp * cost_fp
-        if cost < best_cost:
-            best_cost, best_t = cost, t
-    return float(best_t)
+    if compute_ci:
+        lo, hi = bootstrap_pr_auc_ci(y_true, y_proba, n_boot=300, random_state=RANDOM_STATE)
+        entry["pr_auc_ci_low"] = lo
+        entry["pr_auc_ci_high"] = hi
+    metrics[name] = entry
+    log(f"{name:42s} PR-AUC={entry['pr_auc']:.4f}  Recall={entry['recall']:.3f}  "
+        f"Precision={entry['precision']:.3f}")
 
 
 # ---------------------------------------------------------------------------
-# 4. Logistic Regression: baseline / weighted / SMOTE
+# 3. Logistic Regression: baseline / weighted / SMOTE -- each a full Pipeline
 # ---------------------------------------------------------------------------
 log("Training Logistic Regression (baseline) ...")
-lr_base = LogisticRegression(max_iter=1000, random_state=RANDOM_STATE)
+lr_base = build_model_pipeline(LogisticRegression(max_iter=1000, random_state=RANDOM_STATE))
 lr_base.fit(X_train, y_train)
 evaluate("Logistic Regression (baseline)", y_test, lr_base.predict_proba(X_test)[:, 1])
 joblib.dump(lr_base, os.path.join(MODELS_DIR, "lr_baseline.pkl"))
 
 log("Training Logistic Regression (class-weighted) ...")
-lr_weighted = LogisticRegression(max_iter=1000, class_weight="balanced", random_state=RANDOM_STATE)
+lr_weighted = build_model_pipeline(
+    LogisticRegression(max_iter=1000, class_weight="balanced", random_state=RANDOM_STATE)
+)
 lr_weighted.fit(X_train, y_train)
 evaluate("Logistic Regression (weighted)", y_test, lr_weighted.predict_proba(X_test)[:, 1])
 joblib.dump(lr_weighted, os.path.join(MODELS_DIR, "lr_weighted.pkl"))
 
-log("Applying SMOTE to training data only ...")
+log("Applying SMOTE to training data only (post-preprocessing) ...")
+# SMOTE needs numeric, already-preprocessed input, so fit the shared
+# preprocessing once, resample in that space, then attach a fresh classifier.
+preproc_for_smote = build_preprocessing_pipeline()
+X_train_pre = preproc_for_smote.fit_transform(X_train)
 smote = SMOTE(random_state=RANDOM_STATE)
-X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
+X_train_smote, y_train_smote = smote.fit_resample(X_train_pre, y_train)
 
 log("Training Logistic Regression (SMOTE) ...")
-lr_smote = LogisticRegression(max_iter=1000, random_state=RANDOM_STATE)
-lr_smote.fit(X_train_smote, y_train_smote)
+lr_smote_clf = LogisticRegression(max_iter=1000, random_state=RANDOM_STATE)
+lr_smote_clf.fit(X_train_smote, y_train_smote)
+lr_smote = SkPipeline([("preprocess", preproc_for_smote), ("classifier", lr_smote_clf)])
 evaluate("Logistic Regression (SMOTE)", y_test, lr_smote.predict_proba(X_test)[:, 1])
 joblib.dump(lr_smote, os.path.join(MODELS_DIR, "lr_smote.pkl"))
 
 # ---------------------------------------------------------------------------
-# 5. Random Forest: baseline / weighted / SMOTE
+# 4. Random Forest: baseline / weighted / SMOTE
 # ---------------------------------------------------------------------------
 log("Training Random Forest (baseline) ...")
-rf_base = RandomForestClassifier(n_estimators=100, random_state=RANDOM_STATE, n_jobs=-1)
+rf_base = build_model_pipeline(
+    RandomForestClassifier(n_estimators=100, random_state=RANDOM_STATE, n_jobs=-1)
+)
 rf_base.fit(X_train, y_train)
 evaluate("Random Forest (baseline)", y_test, rf_base.predict_proba(X_test)[:, 1])
 joblib.dump(rf_base, os.path.join(MODELS_DIR, "rf_baseline.pkl"))
 
 log("Training Random Forest (class-weighted) ...")
-rf_weighted = RandomForestClassifier(
-    n_estimators=100, class_weight="balanced", random_state=RANDOM_STATE, n_jobs=-1
+rf_weighted = build_model_pipeline(
+    RandomForestClassifier(n_estimators=100, class_weight="balanced",
+                            random_state=RANDOM_STATE, n_jobs=-1)
 )
 rf_weighted.fit(X_train, y_train)
 evaluate("Random Forest (weighted)", y_test, rf_weighted.predict_proba(X_test)[:, 1])
 joblib.dump(rf_weighted, os.path.join(MODELS_DIR, "rf_weighted.pkl"))
 
-log("Training Random Forest (SMOTE) -- this is the slow one, please wait ...")
-rf_smote = RandomForestClassifier(n_estimators=100, random_state=RANDOM_STATE, n_jobs=-1)
-rf_smote.fit(X_train_smote, y_train_smote)
+log("Training Random Forest (SMOTE) -- slow step ...")
+rf_smote_clf = RandomForestClassifier(n_estimators=100, random_state=RANDOM_STATE, n_jobs=-1)
+rf_smote_clf.fit(X_train_smote, y_train_smote)
+rf_smote = SkPipeline([("preprocess", preproc_for_smote), ("classifier", rf_smote_clf)])
 evaluate("Random Forest (SMOTE)", y_test, rf_smote.predict_proba(X_test)[:, 1])
 joblib.dump(rf_smote, os.path.join(MODELS_DIR, "rf_smote.pkl"))
 
 # ---------------------------------------------------------------------------
-# 6. XGBoost: baseline / weighted
+# 5. XGBoost baseline, then hyperparameter-tuned weighted XGBoost
+#    (this is the deployment model, so it's the one worth tuning properly)
 # ---------------------------------------------------------------------------
 log("Training XGBoost (baseline) ...")
-xgb_base = XGBClassifier(
-    n_estimators=100, random_state=RANDOM_STATE, eval_metric="logloss", n_jobs=-1
+xgb_base = build_model_pipeline(
+    XGBClassifier(n_estimators=100, random_state=RANDOM_STATE, eval_metric="logloss", n_jobs=-1)
 )
 xgb_base.fit(X_train, y_train)
 evaluate("XGBoost (baseline)", y_test, xgb_base.predict_proba(X_test)[:, 1])
 joblib.dump(xgb_base, os.path.join(MODELS_DIR, "xgb_baseline.pkl"))
 
-log("Training XGBoost (weighted) ...")
-weight_ratio = (y_train == 0).sum() / (y_train == 1).sum()
-xgb_weighted = XGBClassifier(
-    n_estimators=100, scale_pos_weight=weight_ratio, random_state=RANDOM_STATE,
-    eval_metric="logloss", n_jobs=-1,
+log("Tuning XGBoost (weighted) with RandomizedSearchCV -- this is the slow one ...")
+weight_ratio = float((y_train == 0).sum() / (y_train == 1).sum())
+X_train_pre_xgb = preproc_for_smote.transform(X_train)  # reuse already-fitted preprocessing
+
+param_dist = {
+    "n_estimators": [100, 200, 300],
+    "max_depth": [3, 4, 5, 6, 8],
+    "learning_rate": [0.01, 0.05, 0.1, 0.2],
+    "subsample": [0.7, 0.8, 0.9, 1.0],
+    "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
+    "min_child_weight": [1, 3, 5],
+}
+search = RandomizedSearchCV(
+    estimator=XGBClassifier(
+        scale_pos_weight=weight_ratio, random_state=RANDOM_STATE,
+        eval_metric="logloss", n_jobs=-1,
+    ),
+    param_distributions=param_dist,
+    n_iter=20,                     # kept modest -- full grid would take hours on 227k rows
+    scoring="average_precision",   # optimize PR-AUC directly, not accuracy
+    cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=RANDOM_STATE),
+    random_state=RANDOM_STATE,
+    n_jobs=-1,
+    verbose=1,
 )
-xgb_weighted.fit(X_train, y_train)
-evaluate("XGBoost (weighted)", y_test, xgb_weighted.predict_proba(X_test)[:, 1])
+search.fit(X_train_pre_xgb, y_train)
+log(f"Best params: {search.best_params_}")
+log(f"Best CV PR-AUC: {search.best_score_:.4f}")
+
+xgb_weighted_clf = search.best_estimator_
+xgb_weighted = SkPipeline([("preprocess", preproc_for_smote), ("classifier", xgb_weighted_clf)])
+evaluate("XGBoost (weighted, tuned)", y_test, xgb_weighted.predict_proba(X_test)[:, 1])
 joblib.dump(xgb_weighted, os.path.join(MODELS_DIR, "xgb_weighted.pkl"))
 
+with open(os.path.join(MODELS_DIR, "best_xgb_params.json"), "w") as f:
+    json.dump({"best_params": search.best_params_, "best_cv_pr_auc": float(search.best_score_)}, f, indent=2)
+
 feature_importance = dict(
-    sorted(
-        zip(MODEL_FEATURE_ORDER, xgb_weighted.feature_importances_.astype(float)),
-        key=lambda kv: kv[1],
-        reverse=True,
-    )
+    sorted(zip(PCA_COLUMNS + ["Amount", "Time"],
+               xgb_weighted_clf.feature_importances_.astype(float)),
+           key=lambda kv: kv[1], reverse=True)
+)
+
+# ---------------------------------------------------------------------------
+# 6. SHAP values for the deployment model
+#
+# Feature importance (above) says which features matter ON AVERAGE across
+# the whole dataset. SHAP says, for ONE specific transaction, how much each
+# feature pushed the prediction up or down -- the thing an analyst actually
+# needs when deciding whether to trust a given flagged transaction.
+# A TreeExplainer on XGBoost is fast (no retraining, closed-form for trees),
+# so it's computed here once and the explainer object is saved for the
+# dashboard to reuse on any transaction a user enters live.
+# ---------------------------------------------------------------------------
+log("Computing SHAP explainer + background values ...")
+explainer = shap.TreeExplainer(xgb_weighted_clf)
+shap_sample_idx = np.random.RandomState(RANDOM_STATE).choice(
+    len(X_test), size=min(500, len(X_test)), replace=False
+)
+X_test_pre_sample = preproc_for_smote.transform(X_test.iloc[shap_sample_idx])
+shap_values_sample = explainer.shap_values(X_test_pre_sample)
+
+joblib.dump(explainer, os.path.join(MODELS_DIR, "shap_explainer.pkl"))
+np.savez(
+    os.path.join(MODELS_DIR, "shap_sample.npz"),
+    shap_values=shap_values_sample,
+    feature_values=X_test_pre_sample,
+    feature_names=np.array(PCA_COLUMNS + ["Amount", "Time"]),
 )
 
 # ---------------------------------------------------------------------------
 # 7. Isolation Forest (unsupervised)
 # ---------------------------------------------------------------------------
 log("Training Isolation Forest ...")
+preproc_iso = build_preprocessing_pipeline()
+X_train_pre_iso = preproc_iso.fit_transform(X_train)
+X_test_pre_iso = preproc_iso.transform(X_test)
+
 fraud_rate = y_train.mean()
-iso_forest = IsolationForest(
+iso_forest_clf = IsolationForest(
     n_estimators=100, contamination=fraud_rate, random_state=RANDOM_STATE, n_jobs=-1
 )
-iso_forest.fit(X_train)
-iso_scores_test = -iso_forest.score_samples(X_test)  # higher = more anomalous
+iso_forest_clf.fit(X_train_pre_iso)
+iso_scores_test = -iso_forest_clf.score_samples(X_test_pre_iso)
 evaluate("Isolation Forest", y_test, iso_scores_test)
+
+iso_forest = SkPipeline([("preprocess", preproc_iso), ("classifier", iso_forest_clf)])
 joblib.dump(iso_forest, os.path.join(MODELS_DIR, "iso_forest.pkl"))
 np.savez(os.path.join(MODELS_DIR, "iso_scores.npz"), scores=iso_scores_test, labels=y_test.values)
 
@@ -250,9 +311,9 @@ np.savez(os.path.join(MODELS_DIR, "iso_scores.npz"), scores=iso_scores_test, lab
 # 8. Autoencoder (PyTorch, trained only on normal transactions)
 # ---------------------------------------------------------------------------
 log("Training Autoencoder (normal transactions only) ...")
-X_train_normal = X_train[y_train == 0]
-X_train_tensor = torch.tensor(X_train_normal.values, dtype=torch.float32)
-X_test_tensor = torch.tensor(X_test.values, dtype=torch.float32)
+X_train_normal_pre = X_train_pre_iso[y_train.values == 0]
+X_train_tensor = torch.tensor(X_train_normal_pre, dtype=torch.float32)
+X_test_tensor = torch.tensor(X_test_pre_iso, dtype=torch.float32)
 input_dim = X_train_tensor.shape[1]
 
 ae = Autoencoder(input_dim)
@@ -285,17 +346,38 @@ evaluate("Autoencoder", y_test, recon_error)
 np.savez(os.path.join(MODELS_DIR, "reconstruction_errors.npz"), errors=recon_error, labels=y_test.values)
 
 # ---------------------------------------------------------------------------
-# 9. Cost-based threshold tuning for the deployed model (XGBoost weighted)
+# 9. Ensemble anomaly score: average of min-max normalized IF + AE scores
+#
+# Each unsupervised model catches somewhat different anomalies (Isolation
+# Forest reasons about feature-space isolation, the Autoencoder reasons
+# about reconstruction fidelity). Averaging their normalized scores tests
+# whether combining them beats either alone.
 # ---------------------------------------------------------------------------
-log("Computing cost-optimal threshold for XGBoost (weighted) ...")
-best_threshold = cost_optimal_threshold(y_test, xgb_weighted.predict_proba(X_test)[:, 1])
+log("Building ensemble anomaly score (Isolation Forest + Autoencoder) ...")
+ensemble_score = (minmax(iso_scores_test) + minmax(recon_error)) / 2
+evaluate("Ensemble (Isolation Forest + Autoencoder)", y_test, ensemble_score)
+np.savez(os.path.join(MODELS_DIR, "ensemble_scores.npz"), scores=ensemble_score, labels=y_test.values)
+
+# ---------------------------------------------------------------------------
+# 10. Cost-based threshold tuning + cost curve for the deployment model
+# ---------------------------------------------------------------------------
+log("Computing cost-optimal threshold + cost curve for XGBoost (weighted, tuned) ...")
+xgb_test_proba = xgb_weighted.predict_proba(X_test)[:, 1]
+best_threshold, curve_thresholds, curve_costs = cost_optimal_threshold(
+    y_test, xgb_test_proba, cost_fn=500, cost_fp=5, return_curve=True
+)
 evaluate(
-    "XGBoost (weighted, tuned threshold)",
-    y_test, xgb_weighted.predict_proba(X_test)[:, 1], threshold=best_threshold,
+    "XGBoost (weighted, tuned threshold)", y_test, xgb_test_proba,
+    threshold=best_threshold, compute_ci=False,
+)
+np.savez(
+    os.path.join(MODELS_DIR, "cost_curve.npz"),
+    thresholds=curve_thresholds, costs=curve_costs,
+    best_threshold=best_threshold, cost_fn=500, cost_fp=5,
 )
 
 # ---------------------------------------------------------------------------
-# 10. Save everything the dashboard needs
+# 11. Save everything the dashboard needs
 # ---------------------------------------------------------------------------
 log("Saving metrics.json, dataset_stats.json, correlations.json, config.json ...")
 
@@ -309,16 +391,18 @@ with open(os.path.join(MODELS_DIR, "feature_importance.json"), "w") as f:
     json.dump(feature_importance, f, indent=2)
 
 config = {
-    "feature_cols": MODEL_FEATURE_ORDER,
     "input_dim": input_dim,
     "best_model_by_pr_auc": max(
-        (k for k in metrics if k != "XGBoost (weighted, tuned threshold)"),
+        (k for k in metrics if "tuned threshold" not in k),
         key=lambda k: metrics[k]["pr_auc"],
     ),
-    "deployment_model": "XGBoost (weighted)",
+    "deployment_model": "XGBoost (weighted, tuned)",
     "deployment_model_file": "xgb_weighted.pkl",
     "chosen_threshold": best_threshold,
     "random_state": RANDOM_STATE,
+    "split_strategy": "time-based (last 20% of transactions by Time held out)",
+    "cost_fn_assumed": 500,
+    "cost_fp_assumed": 5,
 }
 with open(os.path.join(MODELS_DIR, "config.json"), "w") as f:
     json.dump(config, f, indent=2)
