@@ -39,8 +39,8 @@ from sklearn.pipeline import Pipeline as SkPipeline
 from torch.utils.data import DataLoader, TensorDataset
 from xgboost import XGBClassifier
 
+from src.autoencoder_utils import Autoencoder
 from src.model_utils import (
-    Autoencoder,
     MODELS_DIR,
     PCA_COLUMNS,
     RAW_FEATURE_ORDER,

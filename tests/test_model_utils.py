@@ -1,6 +1,7 @@
 """
-Tests for src/model_utils.py -- the shared preprocessing, Autoencoder, and
-evaluation-helper code used by both train_models.py and app.py.
+Tests for src/model_utils.py (preprocessing + evaluation helpers) and
+src/autoencoder_utils.py (the PyTorch Autoencoder), used by both
+train_models.py and app.py.
 
 Run with:
     pytest tests/ -v
@@ -10,8 +11,8 @@ import pandas as pd
 import pytest
 import torch
 
+from src.autoencoder_utils import Autoencoder
 from src.model_utils import (
-    Autoencoder,
     PCA_COLUMNS,
     RAW_FEATURE_ORDER,
     bootstrap_pr_auc_ci,

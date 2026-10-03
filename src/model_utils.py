@@ -1,14 +1,18 @@
 """
 Shared definitions used by BOTH train_models.py and app.py.
 
-This file exists so the Autoencoder architecture, feature order, and
-preprocessing pipeline used at training time can never silently drift
-from what's used at inference time in the dashboard. Only one source
-of truth.
+This file exists so the feature order and preprocessing pipeline used at
+training time can never silently drift from what's used at inference time
+in the dashboard. Only one source of truth.
+
+NOTE: the PyTorch Autoencoder class lives in autoencoder_utils.py, not here,
+deliberately. This file is imported at the TOP of app.py on every single
+page load/rerun. If `import torch` lived here, every click in the dashboard
+would pay the cost of loading torch into memory -- even on pages that never
+touch the Autoencoder. Keeping torch out of this file's import chain is
+what makes the lazy-loading in app.py's load_ae() actually effective.
 """
 import numpy as np
-import torch
-import torch.nn as nn
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -53,38 +57,6 @@ def build_model_pipeline(classifier) -> Pipeline:
         ("preprocess", build_preprocessing_pipeline()),
         ("classifier", classifier),
     ])
-
-
-class Autoencoder(nn.Module):
-    """Matches the architecture trained in the notebook: 30->20->14->7->14->20->30."""
-
-    def __init__(self, input_dim: int):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 20),
-            nn.ReLU(),
-            nn.Linear(20, 14),
-            nn.ReLU(),
-            nn.Linear(14, 7),
-            nn.ReLU(),
-        )
-        self.decoder = nn.Sequential(
-            nn.Linear(7, 14),
-            nn.ReLU(),
-            nn.Linear(14, 20),
-            nn.ReLU(),
-            nn.Linear(20, input_dim),
-        )
-
-    def forward(self, x):
-        return self.decoder(self.encoder(x))
-
-
-def load_autoencoder(path: str, input_dim: int) -> "Autoencoder":
-    model = Autoencoder(input_dim)
-    model.load_state_dict(torch.load(path, map_location="cpu"))
-    model.eval()
-    return model
 
 
 def cost_optimal_threshold(y_true, y_proba, cost_fn=500, cost_fp=5, return_curve=False):

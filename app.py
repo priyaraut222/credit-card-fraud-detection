@@ -20,11 +20,18 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import shap
 import streamlit as st
+# NOTE: torch and shap are intentionally NOT imported here. They're loaded
+# lazily, only inside the functions that actually need them (load_ae,
+# load_shap_explainer), so pages that never touch the Autoencoder or SHAP
+# explanations don't pay the cost of importing those heavy libraries on
+# every sidebar click -- this matters a lot on Streamlit Community Cloud's
+# limited free-tier CPU/RAM.
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from src.model_utils import MODELS_DIR, PCA_COLUMNS, RAW_FEATURE_ORDER, load_autoencoder
+from src.model_utils import MODELS_DIR, PCA_COLUMNS, RAW_FEATURE_ORDER
+# load_autoencoder is imported lazily inside load_ae() below, NOT here --
+# see src/autoencoder_utils.py for why.
 
 st.set_page_config(page_title="Fraud Detection Analytics", layout="wide", initial_sidebar_state="expanded")
 
@@ -85,12 +92,17 @@ def load_pipeline(filename):
 
 @st.cache_resource
 def load_ae(input_dim):
+    # Both the torch-backed module AND its load_autoencoder function are
+    # imported here, lazily -- only when Anomaly Detection actually needs
+    # the Autoencoder, not on every page render.
+    from src.autoencoder_utils import load_autoencoder
     path = os.path.join(MODELS_DIR, "autoencoder.pth")
     return load_autoencoder(path, input_dim) if os.path.exists(path) else None
 
 
 @st.cache_resource
 def load_shap_explainer():
+    import shap  # lazy import -- only pulled in when a SHAP explanation is actually requested
     path = os.path.join(MODELS_DIR, "shap_explainer.pkl")
     return joblib.load(path) if os.path.exists(path) else None
 
